@@ -1,2 +1,0 @@
-# smart-atndc
-smart attendance
