@@ -4,7 +4,6 @@
 #include <EEPROM.h>
 #include <WiFiUdp.h>
 #include "src/RFID/RFID.h"
-#include "src/FirebaseESP8266/FirebaseESP8266.h"
 #include "src/NTPClient/NTPClient.h"
 #include "src/wifi/wifi.h"
 #include "FB_CRED.h" //Contains firebase credentials ! Included in gitignore
