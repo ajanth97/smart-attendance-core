@@ -24,6 +24,8 @@
 
 // please follow the format '(ard;<platform>)'. 
 #define AZURE_SDK_CLIENT_USER_AGENT "c%2F" AZ_SDK_VERSION_STRING "(ard;esp8266)"
+// Publish 1 message every 2 seconds
+#define TELEMETRY_FREQUENCY_MILLISECS 10000
 
 static const char* host = IOT_CONFIG_IOTHUB_FQDN;
 static const char* device_id = IOT_CONFIG_DEVICE_ID;
