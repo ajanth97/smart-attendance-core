@@ -1,7 +1,7 @@
 #include <SPI.h>
 #include <ESP8266WiFi.h>
 #include <WiFiClientSecure.h>
-#include <ESP8266HTTPClient.h>
+#include <time.h>
 #include <EEPROM.h>
 #include <base64.h>
 #include <libb64/cdecode.h>
@@ -9,16 +9,17 @@
 #include <bearssl/bearssl.h>
 #include <bearssl/bearssl_hmac.h>
 #include <libb64/cdecode.h>
-#include "src/RFID/RFID.h"
-#include "src/NTPClient/NTPClient.h"
-#include "src/wifi/wifi.h"
 // Azure IoT SDK for C includes
 #include <az_core.h>
 #include <az_iot.h>
 #include <azure_ca.h>
 //PubSubClient
 #include <PubSubClient.h>
-#include "FB_CRED.h" //Contains firebase credentials ! Included in gitignore
+//Embedded libraries
+#include "src/RFID/RFID.h"
+#include "src/NTPClient/NTPClient.h"
+#include "src/wifi/wifi.h"
+
 #include "AZURE_CRED.h" // Contains Azure IOT HUB Credentials ! Included in gitignore
 
 // please follow the format '(ard;<platform>)'. 
@@ -32,6 +33,7 @@ static const int port = 8883;
 #define sizeofarray(a) (sizeof(a) / sizeof(a[0]))
 #define ONE_HOUR_IN_SECS 3600
 #define MQTT_PACKET_SIZE 1024
+#define NTP_SERVERS "0.jp.pool.ntp.org", "ntp.nict.jp"
 
 // Memory allocated for the sample's variables and structures.
 static WiFiClientSecure wifi_client;
@@ -46,6 +48,8 @@ static unsigned long next_telemetry_send_time_ms = 0;
 static char telemetry_topic[128];
 static uint8_t telemetry_payload[100];
 static uint32_t telemetry_send_count = 0;
+static char send_user_data_topic[128];
+static uint8_t user_data_payload[128];
 
 RFID rfid(D8, D0);       //D8:pin of tag reader SDA. D0:pin of tag reader RST
 unsigned char str[MAX_LEN]; //MAX_LEN is 16: size of the array
@@ -53,20 +57,9 @@ unsigned char str[MAX_LEN]; //MAX_LEN is 16: size of the array
 WiFiUDP ntpUDP;
 //const long utcOffsetInSeconds = 19800; //(UTC+5:30)
 
+//32400 offset for timezone of UTC+9:00
 NTPClient timeClient(ntpUDP, "0.jp.pool.ntp.org", 32400);
 
-//Week Days
-String weekDays[7] = {"Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"};
-
-//Month names
-String months[12] = {"January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"};
-
-//timeClient.setTimeOffset(19800);
-
-String uidPath = "/";
-//Define FirebaseESP8266 data object
-//FirebaseJson json;
-//FirebaseData firebaseData;
 
 //Variables
 int i = 0;
@@ -76,6 +69,21 @@ const char* passphrase = "text";
 static uint32_t getSecondsSinceEpoch()
 {
   return (uint32_t)time(NULL);
+}
+
+static void initializeTime()
+{
+  Serial.print("Setting time using SNTP");
+
+  configTime(32400, 0, NTP_SERVERS);
+  time_t now = time(NULL);
+  while (now < 1668270114)
+  {
+    delay(300);
+    Serial.print(".");
+    now = time(NULL);
+  }
+  Serial.println("Initialized time !");
 }
 
 static void connectToWifi(){
@@ -126,7 +134,7 @@ static void connectToWifi(){
   while ((WiFi.status() != WL_CONNECTED))
   {
     Serial.print(".");
-    delay(1000);
+    delay(100);
     handleWebClient();
   }
 }
@@ -150,7 +158,7 @@ static int generateSasToken(char* sas_token, size_t size)
   az_span encrypted_signature_span
       = az_span_create((uint8_t*)encrypted_signature, sizeofarray(encrypted_signature));
 
-  uint32_t expiration = getSecondsSinceEpoch() + ONE_HOUR_IN_SECS;
+  uint32_t expiration = getSecondsSinceEpoch() + (ONE_HOUR_IN_SECS * 12);
 
   // Get signature
   if (az_result_failed(az_iot_hub_client_sas_get_signature(
@@ -252,7 +260,7 @@ static int connectToAzureIoTHub()
       Serial.print(mqtt_client.state());
       Serial.println(". Trying again in 5 seconds.");
       // Wait 5 seconds before retrying
-      delay(5000);
+      delay(100);
     }
   }
 
@@ -282,6 +290,7 @@ static void initializeClients()
 }
 
 static void establishConnection(){
+  initializeTime();
   initializeClients();
   // The SAS token is valid for 1 hour by default in this sample.
   // After one hour the sample must be restarted, or the client won't be able
@@ -300,8 +309,11 @@ static void establishConnection(){
 static char* getTelemetryPayload()
 {
   az_span temp_span = az_span_create(telemetry_payload, sizeof(telemetry_payload));
-  temp_span = az_span_copy(temp_span, AZ_SPAN_FROM_STR("{ \"msgCount\": "));
-  (void)az_span_u32toa(temp_span, telemetry_send_count++, &temp_span);  
+  temp_span = az_span_copy(temp_span, AZ_SPAN_FROM_STR("{ \"message\": "));
+  temp_span = az_span_copy(temp_span, AZ_SPAN_FROM_STR(" Pinging Azure IOT HUB "));
+  temp_span = az_span_copy(temp_span, AZ_SPAN_FROM_STR(" , "));
+  temp_span = az_span_copy(temp_span, AZ_SPAN_FROM_STR(" \"count\": "));
+  (void)az_span_u32toa(temp_span, telemetry_send_count++, &temp_span);
   temp_span = az_span_copy(temp_span, AZ_SPAN_FROM_STR(" }"));
   temp_span = az_span_copy_u8(temp_span, '\0');
 
@@ -310,7 +322,6 @@ static char* getTelemetryPayload()
 
 static void sendTelemetry()
 {
-//  digitalWrite(LED_PIN, HIGH);
   Serial.print(millis());
   Serial.print(" ESP8266 Sending telemetry . . . ");
   if (az_result_failed(az_iot_hub_client_telemetry_get_publish_topic(
@@ -322,13 +333,42 @@ static void sendTelemetry()
 
   mqtt_client.publish(telemetry_topic, getTelemetryPayload(), false);
   Serial.println("OK");
-  delay(100);
-//  digitalWrite(LED_PIN, LOW);
+}
+
+static char* getUserDataPayload(String rfid){
+  //Storing string data into uint8_t buffer
+  int rfidLength = sizeof(rfid);
+  uint8_t rfid_buffer[rfidLength];
+  for (int i = 0; i < rfidLength; i++){
+    rfid_buffer[i] = rfid[i];
+  }  
+  az_span temp_span = az_span_create(user_data_payload, sizeof(user_data_payload));
+  temp_span = az_span_copy(temp_span, AZ_SPAN_FROM_STR("{ \"message\": "));
+  temp_span = az_span_copy(temp_span, AZ_SPAN_FROM_STR(" Sending User RFID Data "));
+  temp_span = az_span_copy(temp_span, AZ_SPAN_FROM_STR(" , "));
+  temp_span = az_span_copy(temp_span, AZ_SPAN_FROM_STR(" \"RFID\": "));
+  temp_span = az_span_copy(temp_span, AZ_SPAN_FROM_BUFFER(rfid_buffer));
+  Serial.print("Current span size :");
+  Serial.println(az_span_size(temp_span));
+  temp_span = az_span_copy(temp_span, AZ_SPAN_FROM_STR(" }"));
+  temp_span = az_span_copy_u8(temp_span, '\0');
+  return (char*)user_data_payload;
+}
+
+static void sendUserData(String rfid){
+  Serial.println("Sending user RFID data to Azure IOT Hub");
+  if (az_result_failed(az_iot_hub_client_telemetry_get_publish_topic(
+          &client, NULL, send_user_data_topic, sizeof(send_user_data_topic), NULL)))
+  {
+    Serial.println("Failed az_iot_hub_client_send_user_data_publish_topic");
+    return;
+  }
+  mqtt_client.publish(send_user_data_topic, getUserDataPayload(rfid), false);
 }
 
 void setup()
 {
-  Serial.begin(115200); //Initialising if(DEBUG)Serial Monitor
+  Serial.begin(9600); //Initialising if(DEBUG)Serial Monitor
   Serial.println("Startup");
   timeClient.begin();
   SPI.begin();
@@ -344,10 +384,14 @@ void loop() {
   }
   else
   {
-    digitalWrite(D2, HIGH);
-    delay(100);
     digitalWrite(D2, LOW);
-    delay(100);
+    establishConnection();
+  }
+
+  // Check if connected, reconnect if needed.
+  if(!mqtt_client.connected())
+  {
+      establishConnection();
   }
 
   if (rfid.findCard(PICC_REQIDL, str) == MI_OK)   //Wait for a tag to be placed near the reader
@@ -363,7 +407,7 @@ void loop() {
         temp = temp + (0x0F & str[i]);
       }
       Serial.println (temp);
-      pushUser (temp);     //run pushuser function
+      sendUserData(temp);     //run pushuser function
     }
     rfid.selectTag(str); //Lock card to prevent a redundant read, removing the line will make the sketch read cards continually
   }
@@ -371,12 +415,6 @@ void loop() {
 
   if (millis() > next_telemetry_send_time_ms)
   {
-    // Check if connected, reconnect if needed.
-    if(!mqtt_client.connected())
-    {
-      establishConnection();
-    }
-
     sendTelemetry();
     next_telemetry_send_time_ms = millis() + TELEMETRY_FREQUENCY_MILLISECS;
   }
@@ -389,23 +427,19 @@ void loop() {
 void pushUser (String temp)    //defining pushuser function
 {
   Serial.println("PUSHING USER ID: " + temp);
-
   timeClient.update();
   time_t epochTime = timeClient.getEpochTime();
   struct tm *ptm = gmtime ((time_t *)&epochTime);
   int currentMonth = ptm->tm_mon + 1;
   int monthDay = ptm->tm_mday;
   int currentYear = ptm->tm_year + 1900;
-//  String currentDate = String(currentYear) + "-" + String(currentMonth) + "-" + String(monthDay);
-
+  String currentDate = String(currentYear) + "-" + String(currentMonth) + "-" + String(monthDay);
+  Serial.println(currentDate);
+  Serial.println(epochTime);
 //  Firebase.pushString(firebaseData, uidPath + "users/" + temp, String(timeClient.getFormattedTime())+" / "+String (currentDate));
  // Firebase.pushString(firebaseData, uidPath + "users/" + temp, String (currentDate));
   //   Firebase.pushString(firebaseData, uidPath+"users/"+temp,1000);
   //      json.add("id", "fgf");
   //      json.add("uid", temp);
   //      json.add("time", String(timeClient.getFormattedTime()));
-
-  digitalWrite(D3, HIGH);
-  delay(500);
-  digitalWrite(D3, LOW);
 }
