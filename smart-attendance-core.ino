@@ -349,9 +349,12 @@ static char* getUserDataPayload(String rfid){
   temp_span = az_span_copy(temp_span, AZ_SPAN_FROM_STR(" Sending User RFID Data "));
   temp_span = az_span_copy(temp_span, AZ_SPAN_FROM_STR(" , "));
   temp_span = az_span_copy(temp_span, AZ_SPAN_FROM_STR(" \"RFID\": "));
+  temp_span = az_span_copy(temp_span, AZ_SPAN_FROM_STR("}ddddd"));
   temp_span = az_span_copy(temp_span, AZ_SPAN_FROM_BUFFER(rfid_buffer));
+  temp_span = az_span_copy(temp_span, AZ_SPAN_FROM_STR("}ddddd"));
   Serial.print("Current span size :");
   Serial.println(az_span_size(temp_span));
+  Serial.println(temp_span[54]);
   temp_span = az_span_copy(temp_span, AZ_SPAN_FROM_STR(" }"));
   temp_span = az_span_copy_u8(temp_span, '\0');
   return (char*)user_data_payload;
