@@ -1,4 +1,4 @@
-FB_CRED.h
-AZURE_CRED.h
+.pio/
 .DS_Store
 .vscode/
+include/AZURE_CRED.h
