@@ -16,8 +16,8 @@
 //PubSubClient
 #include <PubSubClient.h>
 //Embedded libraries
-#include "src/wifi/wifi.h"
-#include "src/MFRC522/MFRC522.h"
+#include <wifi.h>
+#include <MFRC522.h>
 
 #include "AZURE_CRED.h" // Contains Azure IOT HUB Credentials ! Included in gitignore
 
