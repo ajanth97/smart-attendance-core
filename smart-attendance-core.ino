@@ -16,9 +16,8 @@
 //PubSubClient
 #include <PubSubClient.h>
 //Embedded libraries
-#include "src/RFID/RFID.h"
-#include "src/NTPClient/NTPClient.h"
 #include "src/wifi/wifi.h"
+#include "src/MFRC522/MFRC522.h"
 
 #include "AZURE_CRED.h" // Contains Azure IOT HUB Credentials ! Included in gitignore
 
@@ -51,22 +50,14 @@ static char telemetry_topic[128];
 static uint8_t telemetry_payload[100];
 static uint32_t telemetry_send_count = 0;
 static char send_user_data_topic[128];
-static uint8_t user_data_payload[128];
-
-RFID rfid(D8, D0);       //D8:pin of tag reader SDA. D0:pin of tag reader RST
-unsigned char str[MAX_LEN]; //MAX_LEN is 16: size of the array
-
-WiFiUDP ntpUDP;
-//const long utcOffsetInSeconds = 19800; //(UTC+5:30)
-
-//32400 offset for timezone of UTC+9:00
-NTPClient timeClient(ntpUDP, "0.jp.pool.ntp.org", 32400);
-
+static uint8_t user_data_payload[256];
 
 //Variables
-int i = 0;
 const char* ssid = "text";
 const char* passphrase = "text";
+
+//D8:pin of tag reader SDA. D0:pin of tag reader RST
+MFRC522 mfrc522(D8, D0);
 
 static uint32_t getSecondsSinceEpoch()
 {
@@ -76,7 +67,7 @@ static uint32_t getSecondsSinceEpoch()
 static void initializeTime()
 {
   Serial.print("Setting time using SNTP");
-
+  //32400 offset for timezone of UTC+9:00
   configTime(32400, 0, NTP_SERVERS);
   time_t now = time(NULL);
   while (now < 1668270114)
@@ -311,10 +302,10 @@ static void establishConnection(){
 static char* getTelemetryPayload()
 {
   az_span temp_span = az_span_create(telemetry_payload, sizeof(telemetry_payload));
-  temp_span = az_span_copy(temp_span, AZ_SPAN_FROM_STR("{ \"message\": "));
-  temp_span = az_span_copy(temp_span, AZ_SPAN_FROM_STR(" Pinging Azure IOT HUB "));
+  temp_span = az_span_copy(temp_span, AZ_SPAN_FROM_STR("{\"message\": "));
+  temp_span = az_span_copy(temp_span, AZ_SPAN_FROM_STR("Pinging Azure IOT HUB"));
   temp_span = az_span_copy(temp_span, AZ_SPAN_FROM_STR(" , "));
-  temp_span = az_span_copy(temp_span, AZ_SPAN_FROM_STR(" \"count\": "));
+  temp_span = az_span_copy(temp_span, AZ_SPAN_FROM_STR("\"count\": "));
   (void)az_span_u32toa(temp_span, telemetry_send_count++, &temp_span);
   temp_span = az_span_copy(temp_span, AZ_SPAN_FROM_STR(" }"));
   temp_span = az_span_copy_u8(temp_span, '\0');
@@ -337,27 +328,34 @@ static void sendTelemetry()
   Serial.println("OK");
 }
 
-static char* getUserDataPayload(String rfid){
-  //Storing string data into uint8_t buffer
-  int rfidLength = sizeof(rfid);
-  uint8_t rfid_buffer[rfidLength];
-  for (int i = 0; i < rfidLength; i++){
-    rfid_buffer[i] = rfid[i];
-  }  
+static char* getUserDataPayload(String uid, String rfid_type){
+  int uid_length = uid.length();
+  u_int8_t uid_buffer[uid_length];
+  for (int i = 0 ; i < uid_length; i++){
+    uid_buffer[i] = uid[i];
+  }
+  int rfid_type_length = rfid_type.length();
+  u_int8_t rfid_type_buffer[rfid_type_length];
+  for (int i = 0; i < rfid_type_length; i++)
+  {
+    rfid_type_buffer[i] = rfid_type[i];
+  }
   az_span temp_span = az_span_create(user_data_payload, sizeof(user_data_payload));
-  temp_span = az_span_copy(temp_span, AZ_SPAN_FROM_STR("{ \"message\": "));
-  temp_span = az_span_copy(temp_span, AZ_SPAN_FROM_STR(" Sending User RFID Data "));
+  temp_span = az_span_copy(temp_span, AZ_SPAN_FROM_STR("{\"message\": "));
+  temp_span = az_span_copy(temp_span, AZ_SPAN_FROM_STR("Sending User RFID Data"));
   temp_span = az_span_copy(temp_span, AZ_SPAN_FROM_STR(" , "));
-  temp_span = az_span_copy(temp_span, AZ_SPAN_FROM_STR(" \"RFID\": "));
-  temp_span = az_span_copy(temp_span, AZ_SPAN_FROM_BUFFER(rfid_buffer));
-  Serial.print("Current span size :");
-  Serial.println(az_span_size(temp_span));
+  temp_span = az_span_copy(temp_span, AZ_SPAN_FROM_STR("\"UID\": "));
+  temp_span = az_span_copy(temp_span, AZ_SPAN_FROM_BUFFER(uid_buffer));
+  temp_span = az_span_copy(temp_span, AZ_SPAN_FROM_STR(" , "));
+  temp_span = az_span_copy(temp_span, AZ_SPAN_FROM_STR("\"RFID type\": "));
+  temp_span = az_span_copy(temp_span, AZ_SPAN_FROM_BUFFER(rfid_type_buffer));
   temp_span = az_span_copy(temp_span, AZ_SPAN_FROM_STR(" }"));
   temp_span = az_span_copy_u8(temp_span, '\0');
+  
   return (char*)user_data_payload;
 }
 
-static void sendUserData(String rfid){
+static void sendUserData(String uid, String rfid_type){
   Serial.println("Sending user RFID data to Azure IOT Hub");
   if (az_result_failed(az_iot_hub_client_telemetry_get_publish_topic(
           &client, NULL, send_user_data_topic, sizeof(send_user_data_topic), NULL)))
@@ -365,16 +363,40 @@ static void sendUserData(String rfid){
     Serial.println("Failed az_iot_hub_client_send_user_data_publish_topic");
     return;
   }
-  mqtt_client.publish(send_user_data_topic, getUserDataPayload(rfid), false);
+  mqtt_client.publish(send_user_data_topic, getUserDataPayload(uid,rfid_type), false);
+}
+
+void processRFID()
+{
+  if(mfrc522.PICC_IsNewCardPresent() && mfrc522.PICC_ReadCardSerial())
+  {
+    int uidSize = mfrc522.uid.size;
+    String tag_uid =  String("");
+    Serial.print("UID Size : ");
+    Serial.println(uidSize);
+    Serial.print("UID : ");
+    for (byte i = 0; i < uidSize; i++) 
+    {
+      tag_uid.concat(String(mfrc522.uid.uidByte[i]));
+    }
+    Serial.println(tag_uid);
+    Serial.print("UID String length : ");
+    Serial.println(tag_uid.length());
+    Serial.print("RFID Type : ");
+    MFRC522::PICC_Type piccType = mfrc522.PICC_GetType(mfrc522.uid.sak);
+    String rfid_type = mfrc522.PICC_GetTypeName(piccType);
+    Serial.println(rfid_type);
+    sendUserData(tag_uid,rfid_type);
+    mfrc522.PICC_HaltA();
+  }
 }
 
 void setup()
 {
-  Serial.begin(9600); //Initialising if(DEBUG)Serial Monitor
+  Serial.begin(115200); //Initialising if(DEBUG)Serial Monitor
   Serial.println("Startup");
-  timeClient.begin();
   SPI.begin();
-  rfid.init();
+  mfrc522.PCD_Init();
   connectToWifi();
   establishConnection();
 }
@@ -389,59 +411,18 @@ void loop() {
     digitalWrite(D2, LOW);
     establishConnection();
   }
-
   // Check if connected, reconnect if needed.
   if(!mqtt_client.connected())
   {
       establishConnection();
   }
-
-  if (rfid.findCard(PICC_REQIDL, str) == MI_OK)   //Wait for a tag to be placed near the reader
-  {
-    Serial.println("Card found");
-    String temp = "";                             //Temporary variable to store the read RFID number
-    if (rfid.anticoll(str) == MI_OK)              //Anti-collision detection, read tag serial number
-    {
-      Serial.print("The card's ID number is : ");
-      for (int i = 0; i < 4; i++)                 //Record and display the tag serial number
-      {
-        temp = temp + (0x0F & (str[i] >> 4));
-        temp = temp + (0x0F & str[i]);
-      }
-      Serial.println (temp);
-      sendUserData(temp);     //run pushuser function
-    }
-    rfid.selectTag(str); //Lock card to prevent a redundant read, removing the line will make the sketch read cards continually
-  }
-  rfid.halt();
-
+  //IMPORTANT STEP which process RFID
+  processRFID();
   if (millis() > next_telemetry_send_time_ms)
   {
     sendTelemetry();
     next_telemetry_send_time_ms = millis() + TELEMETRY_FREQUENCY_MILLISECS;
   }
-
   // MQTT loop must be called to process Device-to-Cloud and Cloud-to-Device.
   mqtt_client.loop();
-
-}
-
-void pushUser (String temp)    //defining pushuser function
-{
-  Serial.println("PUSHING USER ID: " + temp);
-  timeClient.update();
-  time_t epochTime = timeClient.getEpochTime();
-  struct tm *ptm = gmtime ((time_t *)&epochTime);
-  int currentMonth = ptm->tm_mon + 1;
-  int monthDay = ptm->tm_mday;
-  int currentYear = ptm->tm_year + 1900;
-  String currentDate = String(currentYear) + "-" + String(currentMonth) + "-" + String(monthDay);
-  Serial.println(currentDate);
-  Serial.println(epochTime);
-//  Firebase.pushString(firebaseData, uidPath + "users/" + temp, String(timeClient.getFormattedTime())+" / "+String (currentDate));
- // Firebase.pushString(firebaseData, uidPath + "users/" + temp, String (currentDate));
-  //   Firebase.pushString(firebaseData, uidPath+"users/"+temp,1000);
-  //      json.add("id", "fgf");
-  //      json.add("uid", temp);
-  //      json.add("time", String(timeClient.getFormattedTime()));
 }
